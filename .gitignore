@@ -1,0 +1,23 @@
+# 依赖与日志
+node_modules/
+logs/
+*.log
+
+# 运行时数据：含玩家标识与真实内容，不入库
+playtime_db.json
+news_data/
+title_data/
+data/news_data/*
+data/title_data/*
+!data/news_data/.gitkeep
+!data/title_data/.gitkeep
+
+# 密钥
+.env
+*.env
+!.env.example
+
+# 编辑器与系统垃圾
+.DS_Store
+.idea/
+.vscode/

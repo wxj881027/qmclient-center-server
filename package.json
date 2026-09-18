@@ -1,0 +1,16 @@
+{
+  "name": "qmclient-center-server",
+  "version": "1.0.0",
+  "private": true,
+  "license": "Zlib",
+  "description": "Center sync server for Q1menG client recognition",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.21.3"
+  }
+}
