@@ -669,7 +669,14 @@ VOICE_REALTIME_URL=ws://127.0.0.1:9987/qm/realtime
 
 常用操作：`sudo systemctl daemon-reload && sudo systemctl restart qmclient-center-server`、`journalctl -u qmclient-center-server -f`。
 
-nginx 由 `qmclient.icu` 的虚拟主机终结 TLS，并把 WebSocket 与普通 HTTP 反向代理到 `127.0.0.1:8080`。仓库内的 `deploy/nginx/qmclient-realtime.conf` 是两条专用 WS 入口片段，可直接 include 到该 server 块：
+nginx 由 `qmclient.icu` 的虚拟主机终结 TLS，并把 WebSocket 与普通 HTTP 反向代理到 `127.0.0.1:8080`。`deploy/nginx/` 下提供 4 个可直接 `include` 到该 server 块的片段：
+
+| 片段 | 覆盖的入口 |
+| --- | --- |
+| `qmclient-realtime.conf` | `location = /ws`、`location = /ws/editor`（WebSocket 专用入口） |
+| `qmclient-news.conf` | `location ^~ /api/v1/news/`（新闻与更新内容） |
+| `qmclient-titles.conf` | `location ^~ /api/v1/titles/`（称号） |
+| `qmclient-developer-auth.conf` | `location = /api/v1/developers/presence`、`/api/v1/developers/presences`（开发者名牌在场） |
 
 ```nginx
 # 中心服务 HTTP 入口
