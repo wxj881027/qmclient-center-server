@@ -433,6 +433,12 @@ HTTP 路由与 `/ws/editor` 共用同一套房间操作与 `revision` 语义；H
 
 `hello` 校验失败（版本不为 2、`machine_hash` 不是 64 位十六进制、`client_id` 不是 8–64 位标识、`player_name` 非文本或超长、`presence` 非法）返回 `invalid_hello`。`presence` 的校验规则：`server_address` 与 `session_id` 均为不超过 128 字节的可打印文本；`players` 为数组且不超过 2 个元素；每个玩家的 `player_id` 为 `0..127` 且不重复，`player_name` 为 1–63 字节可打印文本，`dummy` 必须是布尔值；`players` 非空时 `server_address` 与 `session_id` 不得为空。`hello` 中的 `title_token`、`developer_token` 以及后续 `presence` 中被改写的同名字段必须是 64 位十六进制字符串。
 
+客户端标识通过 `hello` / `presence` 的可选 `client_type` 上报，支持 `qm` / `arg`，兼容 `qmclient` / `q1meng` / `arghena` 别名，不区分大小写。
+
+- 旧客户端握手省略该字段时仍按 `qm` 识别；后续 `presence` 省略时沿用当前会话身份，显式指定其他受支持身份时立即更新。
+- 每个 `players` 条目可单独指定 `client_type`（兼容 `type`）；未指定或不受支持时继承本次上报的身份。顶层显式指定不受支持的身份时保持旧版 `qm` 回退。
+- 转发到识别服务以及识别服务重连后的重新上报均保留身份。同服 `users` 名单保留返回的 `client_type`，供 Qm / Arghena 计分板分别显示标识。
+
 设备身份（`machine_hash`、`client_id`）与时长身份在首次 `hello` 时固定，后续消息不能替换。若 `hello` 带 `recovery_stop_at`，服务端先按该时间点补算上一次未正常结束的会话，再开始新会话；时长数据库不可用时返回 `playtime_unavailable` 并关闭该连接。
 
 ### `/ws` 服务端 → 客户端

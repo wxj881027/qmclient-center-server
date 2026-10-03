@@ -9,9 +9,24 @@ const IsLoopback = (Ip) => Ip === "::1" || Ip === "127.0.0.1" || Ip === "::ffff:
 const USERS_INTERVAL_MS = 5000;
 const USERS_LEASE_SECONDS = 20;
 
-function NormalizePresence(Body)
+function NormalizeClientType(Value, Fallback = "qm")
+{
+	if(typeof Value !== "string") return Fallback;
+	switch(Value.trim().toLowerCase())
+	{
+	case "arg":
+	case "arghena": return "arg";
+	case "qm":
+	case "qmclient":
+	case "q1meng": return "qm";
+	default: return Fallback;
+	}
+}
+
+function NormalizePresence(Body, DefaultClientType = "qm")
 {
 	if(!Body || !IsText(Body.server_address, 128) || !IsText(Body.session_id, 128) || !Array.isArray(Body.players) || Body.players.length > 2) return null;
+	const ClientType = Body.client_type === undefined ? DefaultClientType : NormalizeClientType(Body.client_type);
 	const Players = [];
 	const Ids = new Set();
 	for(const Player of Body.players)
@@ -19,10 +34,11 @@ function NormalizePresence(Body)
 		if(!Player || !Number.isInteger(Player.player_id) || Player.player_id < 0 || Player.player_id >= 128 || Ids.has(Player.player_id) || !IsText(Player.player_name, 63) || !Player.player_name || typeof Player.dummy !== "boolean") return null;
 		Ids.add(Player.player_id);
 		Players.push({ player_id: Player.player_id, player_name: Player.player_name, dummy: Player.dummy,
+			client_type: NormalizeClientType(Player.client_type ?? Player.type, ClientType),
 			foot_particles_enabled: Player.foot_particles_enabled === true, remote_particles_enabled: Player.remote_particles_enabled === true, voice_supported: Player.voice_supported === true });
 	}
 	if(Players.length && (!Body.server_address || !Body.session_id)) return null;
-	return { server_address: Body.server_address, session_id: Body.session_id, players: Players };
+	return { server_address: Body.server_address, session_id: Body.session_id, client_type: ClientType, players: Players };
 }
 
 function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleService, NewsService, Playtime, NowSec = () => Math.floor(Date.now() / 1000) })
@@ -93,7 +109,7 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 	}
 	function Report(Socket, Session, Body, Initial = false)
 	{
-		const Presence = NormalizePresence(Body);
+		const Presence = NormalizePresence(Body, Session.Presence.client_type);
 		if(!Presence) return Error(Socket, "invalid_presence");
 		const PreviousAddress = Session.Presence?.server_address;
 		Session.Presence = Presence;
@@ -102,7 +118,7 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 		if(Body.developer_token !== undefined) Session.DeveloperToken = IsToken(Body.developer_token) ? Body.developer_token : "";
 		if(Presence.players.length)
 		{
-			Recognition.Report({ ...Presence, machine_hash: Session.MachineHash, client_type: "qm", timestamp: NowSec() }, Session.Ip);
+			Recognition.Report({ ...Presence, machine_hash: Session.MachineHash, timestamp: NowSec() }, Session.Ip);
 			if(Session.DeveloperToken) DeveloperService.ReportPresence("Bearer " + Session.DeveloperToken, Presence);
 			if(Session.TitleToken)
 			{
@@ -213,7 +229,7 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 	const OnUsers = (Data) => { for(const Socket of Sessions.keys()) Users(Socket, Data); };
 	const OnVoiceConnected = () => {
 		for(const Session of Sessions.values())
-			if(Session.Presence.players.length) Recognition.Report({ ...Session.Presence, machine_hash: Session.MachineHash, client_type: "qm" }, Session.Ip);
+			if(Session.Presence.players.length) Recognition.Report({ ...Session.Presence, machine_hash: Session.MachineHash }, Session.Ip);
 	};
 	const OnVoiceDisconnected = () => {
 		for(const Session of Sessions.values()) Session.PendingUsers = null;

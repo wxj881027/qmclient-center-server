@@ -215,6 +215,57 @@ test("未握手的连接不能发布 presence", async (T) => {
 	assert.equal(F.Reports.length, 0);
 });
 
+test("Arg 握手向识别服务保留本体和分身的客户端身份", { timeout: 5000 }, async (T) => {
+	const F = await Fixture(T);
+	const C = await F.Connect();
+	const Body = { ...Hello(), client_type: "arg" };
+	Body.players.push({ player_id: 2, player_name: "Arg dummy", dummy: true });
+	C.Socket.send(JSON.stringify(Body));
+	await WaitFor(C.Messages, "users");
+	const Report = F.Recognition.Reports.at(-1).Body;
+	assert.equal(Report.client_type, "arg");
+	assert.equal(Report.machine_hash, Body.machine_hash);
+	assert.deepEqual(Report.players.map((Player) => Player.client_type), ["arg", "arg"]);
+});
+
+test("后续 presence 省略身份时保留 Arg 握手身份", { timeout: 5000 }, async (T) => {
+	const F = await Fixture(T);
+	const C = await F.Connect();
+	C.Socket.send(JSON.stringify({ ...Hello(), client_type: "arg" }));
+	await WaitFor(C.Messages, "time");
+	C.Messages.length = 0;
+	C.Socket.send(JSON.stringify({ ...Hello(), type: "presence" }));
+	C.Socket.send(JSON.stringify({ type: "ping" }));
+	await WaitFor(C.Messages, "pong");
+	assert.equal(F.Recognition.Reports.at(-1).Body.client_type, "arg");
+	assert.equal(F.Recognition.Reports.at(-1).Body.players[0].client_type, "arg");
+});
+
+test("玩家切换对外身份后立即按新身份上报", { timeout: 5000 }, async (T) => {
+	const F = await Fixture(T);
+	const C = await F.Connect();
+	C.Socket.send(JSON.stringify({ ...Hello(), client_type: "arg" }));
+	await WaitFor(C.Messages, "time");
+	C.Messages.length = 0;
+	C.Socket.send(JSON.stringify({ ...Hello(), type: "presence", client_type: "qm" }));
+	C.Socket.send(JSON.stringify({ type: "ping" }));
+	await WaitFor(C.Messages, "pong");
+	assert.equal(F.Recognition.Reports.at(-1).Body.client_type, "qm");
+	assert.equal(F.Recognition.Reports.at(-1).Body.players[0].client_type, "qm");
+});
+
+test("识别服务重连重新上报时仍保留 Arg 身份", { timeout: 5000 }, async (T) => {
+	const F = await Fixture(T);
+	const C = await F.Connect();
+	C.Socket.send(JSON.stringify({ ...Hello(), client_type: "arg" }));
+	await WaitFor(C.Messages, "users");
+	F.Recognition.Reports.length = 0;
+	F.Recognition.emit("connected");
+	assert.equal(F.Recognition.Reports.length, 1);
+	assert.equal(F.Recognition.Reports[0].Body.client_type, "arg");
+	assert.equal(F.Recognition.Reports[0].Body.players[0].client_type, "arg");
+});
+
 test("重连重新下发快照，已连连接不能替换游玩时长身份", async (T) => {
 	const F = await Fixture(T);
 	const C = await F.Connect();
@@ -231,4 +282,3 @@ test("重连重新下发快照，已连连接不能替换游玩时长身份", as
 	await WaitFor(Other.Messages, "broadcast");
 	await WaitFor(Other.Messages, "users");
 });
-
