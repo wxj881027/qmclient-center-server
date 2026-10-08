@@ -102,15 +102,15 @@ test("外服名单保留完整分布，同服识别字段保持原值且不修�
 	const First = (await WaitFor(C.Messages, "users")).data;
 	assert.equal(First.server_address, "one:8303");
 	assert.equal(First.lease_seconds, 20);
-	const { last_ip: LocalIp, ...LocalPublic } = Local;
-	const { last_ip: RemoteIp, ...RemotePublic } = Remote;
+	const LocalPublic = { server_address: Local.server_address, player_name: Local.player_name, client_type: "arg", qid: "local-qid", voice_supported: false };
+	const RemotePublic = { server_address: Remote.server_address, player_name: Remote.player_name, dummy: true, client_type: "qm", qid: "remote-qid" };
 	assert.deepEqual(First.users, [LocalPublic, { server_address: Remote.server_address, player_name: Remote.player_name, dummy: true }]);
 	await WaitFor(C.Messages, "time");
 	C.Messages.length = 0;
 	C.Socket.send(JSON.stringify({ ...Hello("two:8303"), type: "presence" }));
 	const Switched = (await WaitFor(C.Messages, "users")).data;
 	assert.equal(Switched.server_address, "two:8303");
-	assert.deepEqual(Switched.users, [{ server_address: Local.server_address, player_name: Local.player_name, dummy: false }, RemotePublic]);
+	assert.deepEqual(Switched.users, [{ server_address: Local.server_address, player_name: Local.player_name }, RemotePublic]);
 	assert.equal(JSON.stringify(Snapshot), Before);
 });
 
@@ -126,7 +126,11 @@ test("浏览器会话仍收到全部服务器的玩家与分身记录", async (T
 	C.Socket.send(JSON.stringify({ ...Hello(""), players: [] }));
 	const Message = await WaitFor(C.Messages, "users");
 	assert.equal(Message.data.server_address, "");
-	assert.deepEqual(Message.data.users, Users.map(({ server_address, player_name, dummy }) => ({ server_address, player_name, dummy })));
+	assert.deepEqual(Message.data.users, [
+		{ server_address: "one:8303", player_name: "玩家" },
+		{ server_address: "one:8303", player_name: "分身", dummy: true },
+		{ server_address: "two:8303", player_name: "另一服玩家" }
+	]);
 });
 
 test("在线名单五秒内合并为最新快照，没有新快照时不续租", async (T) => {

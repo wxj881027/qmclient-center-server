@@ -2,6 +2,7 @@
 
 const net = require("node:net");
 const { WebSocket, WebSocketServer } = require("ws");
+const { USERS_SYNC_CAPABILITY, UsersSendBudget, LegacyUsersFrame, PrepareUsersSync } = require("./realtime_users");
 
 const IsToken = (Value) => typeof Value === "string" && /^[a-f0-9]{64}$/i.test(Value);
 const IsText = (Value, Max) => typeof Value === "string" && Buffer.byteLength(Value) <= Max && !/[\u0000-\u001f\u007f]/.test(Value);
@@ -25,20 +26,31 @@ function NormalizePresence(Body)
 	return { server_address: Body.server_address, session_id: Body.session_id, players: Players };
 }
 
-function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleService, NewsService, Playtime, NowSec = () => Math.floor(Date.now() / 1000) })
+function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleService, NewsService, Playtime, NowSec = () => Math.floor(Date.now() / 1000), UsersBytesPerSecond = 384 * 1024 })
 {
 	const Wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024, perMessageDeflate: false,
 		handleProtocols: (Protocols) => Protocols.has("qmclient-json") ? "qmclient-json" : false });
 	const Sessions = new Map();
 	const DirtyServers = new Set();
+	const UsersQueue = new Set();
+	const UsersBudget = new UsersSendBudget(UsersBytesPerSecond);
+	let LatestUsers = Recognition.Current();
+	let LatestUsersAt = Date.now();
+	let NextLeaseAt = Date.now() + 5000;
 	let FlushPending = null;
 	let Closed = false;
 
+	function SendSerialized(Socket, Message)
+	{
+		if(Socket.readyState !== WebSocket.OPEN) return false;
+		if(Socket.bufferedAmount > 16 * 1024 * 1024) { Socket.terminate(); return false; }
+		Socket.send(Message);
+		return true;
+	}
 	function Send(Socket, Type, Data)
 	{
-		if(Socket.readyState !== WebSocket.OPEN) return;
-		if(Socket.bufferedAmount > 16 * 1024 * 1024) { Socket.terminate(); return; }
-		Socket.send(JSON.stringify({ type: Type, v: 2, data: Data }));
+		if(Socket.readyState !== WebSocket.OPEN) return false;
+		return SendSerialized(Socket, JSON.stringify({ type: Type, v: 2, data: Data }));
 	}
 	function Error(Socket, Code) { Send(Socket, "error", { error: Code }); }
 	function FlushUsers(Socket, Session)
@@ -50,40 +62,93 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 		if(Now - Pending.ReceivedAt >= USERS_LEASE_SECONDS * 1000) { Session.PendingUsers = null; return; }
 		if(Socket.readyState !== WebSocket.OPEN || Socket.bufferedAmount > 0 ||
 			(Session.LastUsersSentAt !== null && Now - Session.LastUsersSentAt < USERS_INTERVAL_MS)) return;
-		const Users = Pending.Data.users.map(({ last_ip, ...User }) => {
-			// 外服只需要分布统计字段；同服保留完整识别信息，避免全量附加数据挤占称号推送。
-			if(User.server_address === Session.Presence.server_address) return User;
-			return { server_address: User.server_address, player_name: User.player_name, dummy: User.dummy };
-		});
-		Send(Socket, "users", { users: Users, server_address: Session.Presence.server_address, lease_seconds: USERS_LEASE_SECONDS });
+		if(!Pending.Prepared)
+			Pending.Prepared = Session.SyncUsers ? PrepareUsersSync(Pending.Data, Session.Presence.server_address, Session.UsersSync, Session.ForceUsersFull) :
+				{ Frame: LegacyUsersFrame(Pending.Data, Session.Presence.server_address) };
+		if(!UsersBudget.Consume(Buffer.byteLength(Pending.Prepared.Frame) + 10, Now)) return "budget";
+		if(!SendSerialized(Socket, Pending.Prepared.Frame)) return;
+		if(Session.SyncUsers) Session.UsersSync = Pending.Prepared.State;
+		Session.ForceUsersFull = false;
 		Session.PendingUsers = null;
 		Session.LastUsersSentAt = Now;
 	}
-	function Users(Socket, Data, Immediate = false)
+	function DrainUsers()
+	{
+		// 即使事件循环暂时阻塞，恢复时也先续租，不能让补发的大名单抢先。
+		RenewLeases();
+		for(const Socket of UsersQueue)
+		{
+			const Session = Sessions.get(Socket);
+			if(!Session) { UsersQueue.delete(Socket); continue; }
+			try
+			{
+				if(FlushUsers(Socket, Session) === "budget") break;
+			}
+			catch { Session.PendingUsers = null; Error(Socket, "service_unavailable"); }
+			if(!Session.PendingUsers) UsersQueue.delete(Socket);
+		}
+	}
+	function Users(Socket, Data, Immediate = false, ReceivedAt = Date.now())
 	{
 		const Session = Sessions.get(Socket);
 		if(!Session) return;
 		if(Immediate) { Session.PendingUsers = null; Session.LastUsersSentAt = null; }
 		if(!Data) return;
 		// 每个连接只保留最新名单；已有发送积压时不再堆积全量快照。
-		Session.PendingUsers = { Data, ReceivedAt: Date.now() };
-		FlushUsers(Socket, Session);
+		Session.PendingUsers = { Data, ReceivedAt };
+		UsersQueue.add(Socket);
+		if(Immediate) DrainUsers();
 	}
-	function Scoped(Socket, Session)
+	function CurrentUsers(Socket)
+	{
+		const Current = Recognition.Current();
+		if(Current && Current !== LatestUsers) { LatestUsers = Current; LatestUsersAt = Date.now(); }
+		Users(Socket, Current, true, LatestUsersAt);
+	}
+	function Scoped(Socket, Session, { Snapshots = new Map(), Renew = false } = {})
 	{
 		const Address = Session.Presence.server_address;
 		if(!Address) return;
-		const Developers = DeveloperService.GetPresences(Address);
-		const Titles = TitleService.List(Address);
-		if(Developers.response) Send(Socket, "developers", { ...Developers.response, server_address: Address });
-		if(Titles.response) Send(Socket, "titles", { ...Titles.response, server_address: Address });
+		let Snapshot = Snapshots.get(Address);
+		if(!Snapshot)
+		{
+			// 同一批通知中，同服连接共用查询和序列化结果；下一批重新读取当前有效名单。
+			Snapshot = [];
+			for(const [Type, Result] of [["developers", DeveloperService.GetPresences(Address)], ["titles", TitleService.List(Address)]])
+			{
+				if(!Result.response) continue;
+				const Data = { ...Result.response, server_address: Address };
+				// 租约时间变化不触发逐人广播，仍由原有五秒周期发送权威有效期。
+				const Content = JSON.stringify(Data, (Key, Value) =>
+					Key === "server_time" || Key === "issued_at" || Key === "expires_at" ? undefined : Value);
+				Snapshot.push({ Type, Content, Message: JSON.stringify({ type: Type, v: 2, data: Data }) });
+			}
+			Snapshots.set(Address, Snapshot);
+		}
+		const Refresh = Renew || Session.PendingScopedRenewal;
+		const Pending = Snapshot.filter((Entry) => Refresh || Session.ScopedContents.get(Entry.Type) !== Entry.Content);
+		if(!Pending.length) return;
+		if(Socket.bufferedAmount > 0)
+		{
+			// 慢连接不排队中间快照；恢复后重新查询，只发送当时最新的名单和租约。
+			Session.PendingScopedRenewal ||= Renew;
+			if(Socket.bufferedAmount > 16 * 1024 * 1024) Socket.terminate();
+			return;
+		}
+		for(const Entry of Pending)
+		{
+			if(!SendSerialized(Socket, Entry.Message)) return;
+			Session.ScopedContents.set(Entry.Type, Entry.Content);
+		}
+		Session.PendingScopedRenewal = false;
 	}
 	function Flush()
 	{
 		FlushPending = null;
 		if(Closed) return;
+		const Snapshots = new Map();
 		for(const [Socket, Session] of Sessions)
-			if(DirtyServers.has(Session.Presence.server_address)) Scoped(Socket, Session);
+			if(DirtyServers.has(Session.Presence.server_address)) Scoped(Socket, Session, { Snapshots });
 		DirtyServers.clear();
 	}
 	function NotifyServer(Address)
@@ -97,6 +162,12 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 		if(!Presence) return Error(Socket, "invalid_presence");
 		const PreviousAddress = Session.Presence?.server_address;
 		Session.Presence = Presence;
+		if(PreviousAddress !== Presence.server_address)
+		{
+			Session.ScopedContents.clear();
+			Session.PendingScopedRenewal = false;
+			Session.ForceUsersFull = true;
+		}
 		// 只允许更新凭据与玩家状态；设备和时长身份固定在首次握手。
 		if(Body.title_token !== undefined) Session.TitleToken = IsToken(Body.title_token) ? Body.title_token : "";
 		if(Body.developer_token !== undefined) Session.DeveloperToken = IsToken(Body.developer_token) ? Body.developer_token : "";
@@ -112,7 +183,7 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 		}
 		NotifyServer(PreviousAddress);
 		NotifyServer(Presence.server_address);
-		if(!Initial && PreviousAddress !== Presence.server_address) Users(Socket, Recognition.Current(), true);
+		if(!Initial && PreviousAddress !== Presence.server_address) CurrentUsers(Socket);
 	}
 	function Time(Socket, Session)
 	{
@@ -160,7 +231,8 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 					if(Body.v !== 2 || !IsToken(Body.machine_hash) || typeof Body.client_id !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(Body.client_id) || !IsText(Body.player_name, 64) || !NormalizePresence(Body)) return Error(Socket, "invalid_hello");
 					Session = { MachineHash: Body.machine_hash, ClientId: Body.client_id, PlayerName: Body.player_name,
 						Ip, Presence: { server_address: "", session_id: "", players: [] }, TitleToken: "", DeveloperToken: "",
-						PendingUsers: null, LastUsersSentAt: null };
+						PendingUsers: null, LastUsersSentAt: null, ScopedContents: new Map(), PendingScopedRenewal: false,
+						SyncUsers: Array.isArray(Body.capabilities) && Body.capabilities.includes(USERS_SYNC_CAPABILITY), UsersSync: null, ForceUsersFull: true };
 					Sessions.set(Socket, Session);
 					if(Number.isSafeInteger(Body.recovery_stop_at) && Body.recovery_stop_at > 0)
 					{
@@ -173,7 +245,7 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 					Report(Socket, Session, Body, true);
 					Profile(Socket, Session);
 					Scoped(Socket, Session);
-					Users(Socket, Recognition.Current(), true);
+					CurrentUsers(Socket);
 					Send(Socket, "broadcast", NewsService.Current().response);
 					Send(Socket, "time", { ts: NowSec() });
 					return;
@@ -182,9 +254,11 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 				switch(Body.type)
 				{
 				case "presence": Report(Socket, Session, Body); break;
+				case "subscribe_users":
+					Session.ForceUsersFull = true; CurrentUsers(Socket); break;
 				case "subscribe_titles":
 					if(Body.title_token !== undefined) Session.TitleToken = IsToken(Body.title_token) ? Body.title_token : "";
-					Profile(Socket, Session); Scoped(Socket, Session); break;
+					Profile(Socket, Session); Scoped(Socket, Session, { Renew: true }); break;
 				case "news": Send(Socket, "broadcast", NewsService.Current().response); break;
 				case "ping": Send(Socket, "pong", { ts: NowSec() }); break;
 				case "pong": break;
@@ -207,28 +281,43 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 			clearInterval(Heartbeat);
 			const Session = Sessions.get(Socket);
 			Sessions.delete(Socket);
+			UsersQueue.delete(Socket);
 			if(Session) NotifyServer(Session.Presence.server_address);
 		});
 	});
-	const OnUsers = (Data) => { for(const Socket of Sessions.keys()) Users(Socket, Data); };
+	const OnUsers = (Data) => {
+		LatestUsers = Data;
+		LatestUsersAt = Date.now();
+		for(const Socket of Sessions.keys()) Users(Socket, Data, false, LatestUsersAt);
+		DrainUsers();
+	};
 	const OnVoiceConnected = () => {
 		for(const Session of Sessions.values())
 			if(Session.Presence.players.length) Recognition.Report({ ...Session.Presence, machine_hash: Session.MachineHash, client_type: "qm" }, Session.Ip);
 	};
 	const OnVoiceDisconnected = () => {
+		LatestUsers = null;
+		UsersQueue.clear();
 		for(const Session of Sessions.values()) Session.PendingUsers = null;
 	};
 	Recognition.on("users", OnUsers);
 	Recognition.on("connected", OnVoiceConnected);
 	Recognition.on("disconnected", OnVoiceDisconnected);
-	const LeaseTimer = setInterval(() => {
+	function RenewLeases()
+	{
+		const Now = Date.now();
+		if(Now < NextLeaseAt) return;
+		NextLeaseAt = Now + 5000;
+		const Snapshots = new Map();
 		for(const [Socket, Session] of Sessions)
 		{
-			try { FlushUsers(Socket, Session); Scoped(Socket, Session); Time(Socket, Session); }
+			// 先发短租约名单，再尝试较大的全局在线快照，避免头衔被自身发送积压挡住。
+			try { Scoped(Socket, Session, { Snapshots, Renew: true }); Time(Socket, Session); }
 			catch { Error(Socket, "service_unavailable"); }
 		}
-	}, 5000);
-	LeaseTimer.unref();
+	}
+	const UsersTimer = setInterval(DrainUsers, 25);
+	UsersTimer.unref();
 	return {
 		NotifyPresences(Address) { NotifyServer(Address); },
 		NotifyTitles() { for(const Session of Sessions.values()) NotifyServer(Session.Presence.server_address); },
@@ -236,7 +325,8 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 		Close()
 		{
 			Closed = true;
-			clearInterval(LeaseTimer);
+			clearInterval(UsersTimer);
+			UsersQueue.clear();
 			clearTimeout(FlushPending);
 			Recognition.off("users", OnUsers);
 			Recognition.off("connected", OnVoiceConnected);
