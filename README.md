@@ -763,3 +763,7 @@ python3 diff_update.py <旧版本> <新版本>    # 例如 python3 diff_update.p
 本项目使用 Zlib 许可证，见同目录 `LICENSE`。服务使用的 `express`、`ws` 等第三方依赖遵循其各自的许可证。
 
 上游致谢：DDNet / Teeworlds / TaterClient。
+
+## 服务器列表镜像、自动翻译与装饰投掷
+
+新增入口、预算配置和 Nginx 接线见 [服务接入说明](deploy/2026-10-08-服务接入说明.md)。当前改动尚未部署，测试尚未执行。客户端自动翻译为可选后端，维护者凭据留在服务端。

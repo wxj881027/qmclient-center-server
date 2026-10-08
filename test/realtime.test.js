@@ -65,6 +65,33 @@ async function WaitFor(Messages, Type)
 	assert.fail(`没有收到 ${Type}`);
 }
 
+test("装饰投掷只发给同服且声明能力的连接，不泄露给旧客户端或外服", async (T) => {
+	const F = await Fixture(T);
+	const Sender = await F.Connect();
+	const Same = await F.Connect();
+	const Legacy = await F.Connect();
+	const Other = await F.Connect();
+	const Capability = ["decorative_throw_v1"];
+	for(const [Connection, Address, Capabilities] of [[Sender, "one:8303", Capability], [Same, "one:8303", Capability], [Legacy, "one:8303", []], [Other, "two:8303", Capability]])
+	{
+		Connection.Socket.send(JSON.stringify({ ...Hello(Address), capabilities: Capabilities }));
+		await WaitFor(Connection.Messages, "time");
+		Connection.Messages.length = 0;
+	}
+	Sender.Socket.send(JSON.stringify({ type: "decorative_throw", projectile: "egg", player_id: 1,
+		server_address: "one:8303", session_id: "session-1", origin: { x: 100, y: 80 }, direction: { x: 0.6, y: -0.8 } }));
+	const Event = await WaitFor(Same.Messages, "decorative_throw");
+	assert.equal(Event.data.projectile, "egg");
+	assert.equal(Event.data.player_name, "玩家");
+	// pong 是同一连接上已处理前序帧的屏障，不用延长等待来判断未转发。
+	for(const Connection of [Sender, Legacy, Other])
+	{
+		Connection.Socket.send(JSON.stringify({ type: "ping" }));
+		await WaitFor(Connection.Messages, "pong");
+		assert.equal(Connection.Messages.some((Message) => Message.type === "decorative_throw"), false);
+	}
+});
+
 test("换服后的头衔快照携带新服务器地址", async (T) => {
 	const F = await Fixture(T);
 	const C = await F.Connect();
