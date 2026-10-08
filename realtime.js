@@ -2,6 +2,7 @@
 
 const net = require("node:net");
 const { WebSocket, WebSocketServer } = require("ws");
+const { CAPABILITY: THROW_CAPABILITY, PrepareDecorativeThrow } = require("./decorative_throw");
 
 const IsToken = (Value) => typeof Value === "string" && /^[a-f0-9]{64}$/i.test(Value);
 const IsText = (Value, Max) => typeof Value === "string" && Buffer.byteLength(Value) <= Max && !/[\u0000-\u001f\u007f]/.test(Value);
@@ -160,6 +161,7 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 					if(Body.v !== 2 || !IsToken(Body.machine_hash) || typeof Body.client_id !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(Body.client_id) || !IsText(Body.player_name, 64) || !NormalizePresence(Body)) return Error(Socket, "invalid_hello");
 					Session = { MachineHash: Body.machine_hash, ClientId: Body.client_id, PlayerName: Body.player_name,
 						Ip, Presence: { server_address: "", session_id: "", players: [] }, TitleToken: "", DeveloperToken: "",
+						DecorativeThrows: Array.isArray(Body.capabilities) && Body.capabilities.includes(THROW_CAPABILITY),
 						PendingUsers: null, LastUsersSentAt: null };
 					Sessions.set(Socket, Session);
 					if(Number.isSafeInteger(Body.recovery_stop_at) && Body.recovery_stop_at > 0)
@@ -182,6 +184,14 @@ function CreateRealtimeServer(Server, { Recognition, DeveloperService, TitleServ
 				switch(Body.type)
 				{
 				case "presence": Report(Socket, Session, Body); break;
+				case "decorative_throw": {
+					const Result = PrepareDecorativeThrow(Session, Body, Date.now());
+					if(Result.Error) { Error(Socket, Result.Error); break; }
+					for(const [Recipient, Target] of Sessions)
+						if(Recipient !== Socket && Target.DecorativeThrows && Target.Presence.players.length && Target.Presence.server_address === Session.Presence.server_address)
+							Send(Recipient, "decorative_throw", Result.Data);
+					break;
+				}
 				case "subscribe_titles":
 					if(Body.title_token !== undefined) Session.TitleToken = IsToken(Body.title_token) ? Body.title_token : "";
 					Profile(Socket, Session); Scoped(Socket, Session); break;

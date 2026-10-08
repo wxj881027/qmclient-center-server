@@ -16,6 +16,8 @@ const {
 const { CreateTitleService, RegisterTitleRoutes } = require("./title_auth");
 const { CreateNewsService, RegisterNewsRoutes } = require("./news_auth");
 const { CreateRealtimeServer } = require("./realtime");
+const { CreateServerListMirror, RegisterServerListMirrorRoutes } = require("./serverlist_mirror");
+const { CreateTranslateService, RegisterTranslateRoutes, ProvidersFromEnvironment } = require("./translate_service");
 const { CreateVoiceRealtime } = require("./voice_realtime");
 const { CreateEditorRealtimeServer } = require("./editor_realtime");
 let g_EditorRealtime = null;
@@ -645,6 +647,11 @@ function SendEditorCollabRoom(res, Room, Extra = {})
 app.get("/healthz", (_req, res) => {
 	res.json({ ok: true, ts: NowSec() });
 });
+
+const g_ServerListMirror = CreateServerListMirror();
+RegisterServerListMirrorRoutes(app, g_ServerListMirror);
+RegisterTranslateRoutes(app, CreateTranslateService({ Providers: ProvidersFromEnvironment(process.env) }), (Req) => CheckRateLimit(ClientIp(Req)));
+g_ServerListMirror.Start();
 
 // HTTP 兼容路由和 WS 共用同一套房间操作，保持地图与 revision 语义。
 const EditorCollabHandlers = new Map();
