@@ -773,3 +773,16 @@ python3 diff_update.py <旧版本> <新版本>    # 例如 python3 diff_update.p
 ## 服务器列表镜像、自动翻译与装饰投掷
 
 新增入口、预算配置和 Nginx 接线见 [服务接入说明](deploy/2026-10-08-服务接入说明.md)。当前改动尚未部署，测试尚未执行。客户端自动翻译为可选后端，维护者凭据留在服务端。
+
+## 禁止公开 HTTP JSON 读取
+
+中心服务仅监听 `127.0.0.1:8080`，对外访问统一经过反向代理。
+在 QmClient 的 HTTPS server 块内加入：
+
+```nginx
+include /etc/nginx/snippets/qmclient-no-public-json.conf;
+```
+
+该规则拒绝 `/api/v1/`、服务器列表镜像及旧名单、时长、健康与版本入口的 GET/HEAD，返回 404。
+HTTP 称号资料读取也随之停用，资料与在线状态由现有 WebSocket 推送提供；合法 POST 操作保留。
+现有 `/ws` 与 `/ws/editor` 不受此读取规则影响。应用端口必须保持回环监听，避免绕过反向代理。
