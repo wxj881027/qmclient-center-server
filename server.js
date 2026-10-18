@@ -997,6 +997,6 @@ g_EditorRealtime = CreateEditorRealtimeServer(HttpServer, {
         return true;
     }
 });
-HttpServer.listen(PORT, "0.0.0.0", () => {
+HttpServer.listen(PORT, "127.0.0.1", () => {
 	console.log(`[qmclient-center-server] listening on :${PORT}`);
 });
