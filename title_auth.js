@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { IsTitleAppearance, TitleAppearanceForUser } = require("./title_appearance");
 
 const TTL = 15;
 const Hash = (Value) => crypto.createHash("sha256").update(Value).digest("hex");
@@ -105,7 +106,7 @@ function CreateTitleService({ Directory, NowSec = () => Math.floor(Date.now() / 
 	{
 		const User = Data.users[Key];
 		// style 为空表示未自选，由服务端在每局开始时随机分配。
-		return Result(200, { ok: true, title: User.title, style: User.style || "", bound_name: User.bound_name });
+		return Result(200, { ok: true, title: User.title, appearance: TitleAppearanceForUser(User), style: User.style || "", bound_name: User.bound_name });
 	}
 	function Cleanup()
 	{
@@ -151,7 +152,11 @@ function CreateTitleService({ Directory, NowSec = () => Math.floor(Date.now() / 
 			// 老客户端不带 style，此时保留已有值而不是清空。
 			if(Body.style !== undefined && !IsStyle(Body.style))
 				return Fail(400, "invalid_style");
+			if(Body.appearance !== undefined && !IsTitleAppearance(Body.appearance))
+				return Fail(400, "invalid_appearance");
 			const Next = JSON.parse(JSON.stringify(Data));
+			if(Body.appearance !== undefined)
+				Next.users[Key].appearance = TitleAppearanceForUser({ appearance: Body.appearance });
 			Next.users[Key].title = Body.title;
 			Next.users[Key].bound_name = Body.bound_name;
 			Next.users[Key].style = Body.style !== undefined ? Body.style : (Data.users[Key].style || "");
@@ -203,7 +208,7 @@ function CreateTitleService({ Directory, NowSec = () => Math.floor(Date.now() / 
 					continue;
 				for(const Player of Session.players)
 				{
-					Presences.set(Player.player_id + ":" + Player.player_name, { ...Player, title: User.title, style: Session.style || "", server_address: Server, issued_at: Session.issued_at, expires_at: Session.expires_at });
+					Presences.set(Player.player_id + ":" + Player.player_name, { ...Player, title: User.title, appearance: TitleAppearanceForUser(User), style: Session.style || "", server_address: Server, issued_at: Session.issued_at, expires_at: Session.expires_at });
 				}
 			}
 			return Result(200, { server_time: NowSec(), presences: Array.from(Presences.values()) });
