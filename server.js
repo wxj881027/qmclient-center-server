@@ -7,6 +7,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const express = require("express");
+const { CreatePublicWordFilterService, RegisterPublicWordFilterRoutes } = require("./public_word_filter");
 
 const {
 	CreateDeveloperPresenceService,
@@ -25,6 +26,9 @@ let g_EditorRealtime = null;
 let g_Realtime = null;
 
 const app = express();
+RegisterPublicWordFilterRoutes(app, CreatePublicWordFilterService({
+	FilePath: process.env.PUBLIC_WORD_FILTER_FILE || path.join(__dirname, "data", "public_word_filter", "words.txt")
+}));
 const DefaultJsonParser = express.json({ limit: "32kb" });
 const EditorCollabJsonParser = express.json({ limit: "32mb" });
 app.use((req, res, next) => {
