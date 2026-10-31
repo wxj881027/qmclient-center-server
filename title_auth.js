@@ -30,6 +30,7 @@ const STYLE_IDS = [
 	"sylvestaff", "temporal_umbrella", "triactis_hammer", "donator_item",
 ];
 
+const IsChatStyle = (Value) => typeof Value === "string" && ["", "soft_glow", "platinum", "fluid"].includes(Value);
 const IsStyle = (Value) => typeof Value === "string" && (Value === "" || STYLE_IDS.includes(Value));
 
 // 昵称绑定以「会话」为单位判定：一条上报里的本体或分身任一只叫这个名字，整条会话
@@ -105,7 +106,7 @@ function CreateTitleService({ Directory, NowSec = () => Math.floor(Date.now() / 
 	{
 		const User = Data.users[Key];
 		// style 为空表示未自选，由服务端在每局开始时随机分配。
-		return Result(200, { ok: true, title: User.title, style: User.style || "", bound_name: User.bound_name });
+		return Result(200, { ok: true, title: User.title, style: User.style || "", chat_style: User.chat_style || "", bound_name: User.bound_name });
 	}
 	function Cleanup()
 	{
@@ -129,7 +130,7 @@ function CreateTitleService({ Directory, NowSec = () => Math.floor(Date.now() / 
 				return Fail(409, "already_registered");
 			const Code = JSON.parse(fs.readFileSync(CodeFile, "utf8"));
 			const Next = JSON.parse(JSON.stringify(Data));
-			Next.users[TokenHash] = { label: Code.label, title: "赞助者", style: "", bound_name: "", revoked: false };
+			Next.users[TokenHash] = { label: Code.label, title: "赞助者", style: "", chat_style: "", bound_name: "", revoked: false };
 			Next.redeemed[CodeHash] = TokenHash;
 			Save(Next);
 			return ProfileFor(TokenHash);
@@ -151,10 +152,13 @@ function CreateTitleService({ Directory, NowSec = () => Math.floor(Date.now() / 
 			// 老客户端不带 style，此时保留已有值而不是清空。
 			if(Body.style !== undefined && !IsStyle(Body.style))
 				return Fail(400, "invalid_style");
+			if(Body.chat_style !== undefined && !IsChatStyle(Body.chat_style))
+				return Fail(400, "invalid_chat_style");
 			const Next = JSON.parse(JSON.stringify(Data));
 			Next.users[Key].title = Body.title;
 			Next.users[Key].bound_name = Body.bound_name;
 			Next.users[Key].style = Body.style !== undefined ? Body.style : (Data.users[Key].style || "");
+			Next.users[Key].chat_style = Body.chat_style !== undefined ? Body.chat_style : (Data.users[Key].chat_style || "");
 			Save(Next);
 			return ProfileFor(Key);
 		},
@@ -203,7 +207,7 @@ function CreateTitleService({ Directory, NowSec = () => Math.floor(Date.now() / 
 					continue;
 				for(const Player of Session.players)
 				{
-					Presences.set(Player.player_id + ":" + Player.player_name, { ...Player, title: User.title, style: Session.style || "", server_address: Server, issued_at: Session.issued_at, expires_at: Session.expires_at });
+					Presences.set(Player.player_id + ":" + Player.player_name, { ...Player, title: User.title, style: Session.style || "", chat_style: User.chat_style || "", server_address: Server, issued_at: Session.issued_at, expires_at: Session.expires_at });
 				}
 			}
 			return Result(200, { server_time: NowSec(), presences: Array.from(Presences.values()) });
